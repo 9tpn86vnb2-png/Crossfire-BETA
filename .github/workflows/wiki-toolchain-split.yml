@@ -1,0 +1,48 @@
+name: Split Crossfire CLI toolchain
+on:
+  push:
+    branches: [crossfire-wiki-toolchain-20261001]
+    paths: [.github/workflows/wiki-toolchain-split.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  split:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: crossfire-wiki-cli-toolchain
+          run-id: 36809932749
+          github-token: ${{ github.token }}
+          path: parts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-toolchain-A
+          path: |
+            parts/cli-part-000
+            parts/cli-part-001
+            parts/cli-part-002
+            parts/cli-part-003
+            parts/cli-part-004
+            parts/cli-part-005
+            parts/cli-part-006
+            parts/cli-part-007
+          compression-level: 0
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-toolchain-B
+          path: |
+            parts/cli-part-008
+            parts/cli-part-009
+            parts/cli-part-010
+            parts/cli-part-011
+            parts/cli-part-012
+            parts/cli-part-013
+            parts/cli-part-014
+            parts/cli-part-015
+            parts/cli-toolchain.sha256
+          compression-level: 0
+          retention-days: 3
