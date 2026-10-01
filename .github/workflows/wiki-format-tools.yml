@@ -1,0 +1,23 @@
+name: Prepare Wiki source formatters
+on:
+  push:
+    branches: [crossfire-wiki-toolchain-20261001]
+    paths: [.github/workflows/wiki-format-tools.yml]
+permissions:
+  contents: read
+jobs:
+  tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: |
+          mkdir -p wheels
+          python -m pip download -d wheels 'clang-format==20.1.8' 'black==25.1.0'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wiki-source-format-tools
+          path: wheels/
+          retention-days: 3
