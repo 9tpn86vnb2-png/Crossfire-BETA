@@ -1,0 +1,74 @@
+name: Prepare Crossfire Wiki CLI toolchain
+on:
+  push:
+    branches: [crossfire-wiki-toolchain-20261001]
+    paths: [.github/workflows/wiki-toolchain.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install pinned compiler and dependencies
+        shell: bash
+        env:
+          PLATFORMIO_CORE_DIR: ${{ github.workspace }}/core
+          PLATFORMIO_SETTING_ENABLE_TELEMETRY: 'No'
+        run: |
+          set -euo pipefail
+          mkdir -p probe/src export/wheels export/logs
+          python -m pip install 'platformio==6.1.18'
+          cat > probe/platformio.ini <<'EOF'
+          [env:x4-pro]
+          platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.37/platform-espressif32.zip
+          board = esp32-s3-devkitc1-n16r8
+          framework = arduino
+          board_build.arduino.memory_type = dio_opi
+          board_build.flash_mode = dio
+          build_flags = -DBOARD_HAS_PSRAM -DARDUINO_USB_MODE=1
+          lib_deps =
+            bblanchon/ArduinoJson @ 7.4.2
+            ricmoo/QRCode @ 0.0.1
+            bitbank2/PNGdec @ 1.1.6
+            https://github.com/bitbank2/JPEGDEC.git#86282979224c8a32fd51e091ed5a35b0c699a52b
+            links2004/WebSockets @ 2.7.3
+            wolfssl/Arduino-wolfSSL @ 5.7.2
+            greiman/SdFat @ 2.3.1
+          EOF
+          printf '#include <Arduino.h>\nvoid setup() {}\nvoid loop() { delay(1000); }\n' > probe/src/main.cpp
+          pio run -d probe -e x4-pro 2>&1 | tee export/logs/probe-build.log
+          python -m pip download -d export/wheels 'platformio==6.1.18' 'scons' 'esptool' 'pyyaml' 'pillow' 'beautifulsoup4' 'requests' 'idf-component-manager' 'rich' 'click<8.2'
+          git clone --depth 1 --branch v1.17.0 https://github.com/google/googletest.git export/googletest
+          rm -rf export/googletest/.git
+          cp -a probe/.pio/libdeps export/libdeps
+          cp -a core/platforms export/platforms
+          cp -a core/packages export/packages
+          if [ -d core/penv ]; then cp -a core/penv export/pio-penv; fi
+          python --version > export/logs/python-version.txt
+          pio system info > export/logs/pio-system-info.txt
+          find export -name '*.pyc' -delete
+          find export -type d -name .git -prune -exec rm -rf {} +
+          tar -C export -cf - . | zstd -T0 -10 -o cli-toolchain.tar.zst
+          sha256sum cli-toolchain.tar.zst > cli-toolchain.sha256
+          split -b 48000000 -d -a 3 cli-toolchain.tar.zst cli-part-
+      - name: Upload dependency bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: crossfire-wiki-cli-toolchain
+          path: |
+            cli-part-*
+            cli-toolchain.sha256
+          compression-level: 0
+          retention-days: 3
+      - name: Upload CLI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crossfire-wiki-toolchain-logs
+          path: export/logs/
+          retention-days: 7
