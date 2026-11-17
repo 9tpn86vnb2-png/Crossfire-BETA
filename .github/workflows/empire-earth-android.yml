@@ -33,10 +33,57 @@ jobs:
           from pathlib import Path
           for name in ('xbuild.py', 'android_apk.py'):
               p=Path('tools')/name
-              s=p.read_text()
-              s=s.replace('/ "windows-x86_64"', '/ "linux-x86_64"')
+              s=p.read_text().replace('/ "windows-x86_64"', '/ "linux-x86_64"')
               s=s.replace('.exe"', '"').replace('.bat"', '"')
+              if name == 'xbuild.py':
+                  old='sdl_prefix(t) / "include", font_arrays(t), general_midi_array(t)'
+                  assert old in s
+                  s=s.replace(old,'sdl_prefix(t) / "include", general_midi_array(t)')
               p.write_text(s)
+          Path('src/Platform/Common/PlatFontData.c').write_text(r'''/* Android prototype: use user-supplied or device-resident fonts. No font bytes are embedded. */
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include "platform/PlatFont.h"
+          static unsigned char* ReadFont(const char* path, uint32_t* size) {
+              FILE* f=fopen(path,"rb"); if(!f)return NULL;
+              if(fseek(f,0,SEEK_END)!=0){fclose(f);return NULL;}
+              long n=ftell(f); if(n<12 || n>16777216){fclose(f);return NULL;}
+              rewind(f); unsigned char* b=(unsigned char*)malloc((size_t)n);
+              if(!b){fclose(f);return NULL;}
+              size_t got=fread(b,1,(size_t)n,f); fclose(f);
+              if(got!=(size_t)n){free(b);return NULL;}
+              *size=(uint32_t)n;return b;
+          }
+          int PlatFontRegisterBuiltIn(void) {
+              static int done=0,result=0; if(done)return result;
+              const char* faces[]={"Arial","Times New Roman","Courier New"};
+              const char* families[]={"Sans","Serif","Mono"};
+              const char* styles[]={"Regular","Bold","Italic","BoldItalic"};
+              const char* root=getenv("EE_DATA_ROOT");
+              int regulars=0;
+              for(int family=0;family<3;family++)for(int style=0;style<4;style++) {
+                  char paths[8][4096]; int count=0;
+                  if(root)snprintf(paths[count++],4096,"%s/fonts/Liberation%s-%s.ttf",root,families[family],styles[style]);
+                  if(family==1)snprintf(paths[count++],4096,"/system/fonts/NotoSerif-%s.ttf",styles[style]);
+                  if(family==2)snprintf(paths[count++],4096,"/system/fonts/DroidSansMono.ttf");
+                  snprintf(paths[count++],4096,"/system/fonts/Roboto-%s.ttf",styles[style]);
+                  snprintf(paths[count++],4096,"/system/fonts/Roboto-Regular.ttf");
+                  snprintf(paths[count++],4096,"/system/fonts/Roboto[wdth,wght].ttf");
+                  snprintf(paths[count++],4096,"/system/fonts/NotoSans-Regular.ttf");
+                  int ok=0;
+                  for(int p=0;p<count && !ok;p++) {
+                      uint32_t n=0; unsigned char* b=ReadFont(paths[p],&n); if(!b)continue;
+                      ok=PlatFontRegister(faces[family],style==1||style==3,style>=2,b,n);
+                      if(!ok)free(b); /* successful registrations retain bytes for process lifetime */
+                  }
+                  if(style==0 && ok)regulars++;
+              }
+              PlatFontAlias("Tahoma","Arial"); PlatFontAlias("MS Sans Serif","Arial");
+              done=1; result=regulars==3;return result;
+          }
+          ''')
           PY
           python -I tools/fetch_posix.py sdl3 | tee ../deliverable/verification/sdl-fetch.log
           curl --fail --location --retry 3 'https://github.com/gfx-rs/wgpu-native/releases/download/v24.0.3.1/wgpu-android-aarch64-release.zip' -o toolchain/wgpu-android.zip
@@ -81,7 +128,7 @@ jobs:
               assert 'lib/arm64-v8a/libmain.so' in names
               assert 'assets/data.zip' not in names
               assert not any(n.lower().endswith(('.ttf','.otf','.woff','.woff2','.ttc')) for n in names)
-          pathlib.Path('../deliverable/verification/package.json').write_text(json.dumps({'sha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'bytes':apk.stat().st_size,'game_data_bundled':False,'android_runtime_tested':False,'source':'RedstoneProff/empire_earth_next','source_commit':'2425578a60b7a0003abb5d7c4b6cf9b88dd7a4e6'},indent=2))
+          pathlib.Path('../deliverable/verification/package.json').write_text(json.dumps({'sha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'bytes':apk.stat().st_size,'game_data_bundled':False,'font_files_bundled':False,'android_runtime_tested':False,'source':'RedstoneProff/empire_earth_next','source_commit':'2425578a60b7a0003abb5d7c4b6cf9b88dd7a4e6'},indent=2))
           PY
           tar --exclude=.git --exclude=toolchain --exclude=build --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' --exclude='*.ttc' -czf ../deliverable/upstream-source-no-fonts.tar.gz .
       - name: Upload engine and evidence
