@@ -1,0 +1,100 @@
+name: Empire Earth Android prototype
+on:
+  push:
+    branches: [empire-earth-android-prototype-20261116]
+    paths: ['.github/workflows/empire-earth-android.yml']
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: RedstoneProff/empire_earth_next
+          ref: 2425578a60b7a0003abb5d7c4b6cf9b88dd7a4e6
+          path: engine
+          persist-credentials: false
+      - name: Prepare Android toolchain and Linux host adaptation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deliverable/verification tools-for-repack
+          cd engine
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          set +o pipefail
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" 'ndk;27.2.12479018' 'build-tools;35.0.0' 'platforms;android-34' > ../deliverable/verification/sdk-setup.log 2>&1
+          set -o pipefail
+          mkdir -p toolchain/wgpu/android-aarch64 toolchain/wgpu/x86_64
+          ln -s "$SDK" toolchain/android-sdk
+          ln -s "$SDK/ndk/27.2.12479018" toolchain/android-ndk-r27c
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('xbuild.py', 'android_apk.py'):
+              p=Path('tools')/name
+              s=p.read_text()
+              s=s.replace('/ "windows-x86_64"', '/ "linux-x86_64"')
+              s=s.replace('.exe"', '"').replace('.bat"', '"')
+              p.write_text(s)
+          PY
+          python -I tools/fetch_posix.py sdl3 | tee ../deliverable/verification/sdl-fetch.log
+          curl --fail --location --retry 3 'https://github.com/gfx-rs/wgpu-native/releases/download/v24.0.3.1/wgpu-android-aarch64-release.zip' -o toolchain/wgpu-android.zip
+          sha256sum toolchain/wgpu-android.zip > ../deliverable/verification/wgpu-sha256.txt
+          unzip -q toolchain/wgpu-android.zip -d toolchain/wgpu/android-aarch64
+          cp -a toolchain/wgpu/android-aarch64/include toolchain/wgpu/x86_64/
+          git diff > ../deliverable/verification/linux-host.patch
+          git rev-parse HEAD > ../deliverable/verification/upstream-commit.txt
+          java -version 2> ../deliverable/verification/java-version.txt
+          toolchain/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --version > ../deliverable/verification/clang-version.txt
+      - name: Compile SDL3 and real ARM64 game engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          python -I tools/xbuild.py sdl3 --target android-arm64 -j 4 2>&1 | tee ../deliverable/verification/sdl-build.log
+          python -I tools/xbuild.py game --target android-arm64 -j 4 2>&1 | tee ../deliverable/verification/game-build.log
+      - name: Package code-only APK and collect local repack inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          python -I tools/android_apk.py --no-data 2>&1 | tee ../deliverable/verification/apk-build.log
+          cp build/android/ee-aoc.apk ../deliverable/Empire-Earth-AoC-upstream-code-only.apk
+          toolchain/android-sdk/build-tools/35.0.0/apksigner verify --verbose --print-certs build/android/ee-aoc.apk > ../deliverable/verification/apksigner.txt
+          toolchain/android-sdk/build-tools/35.0.0/aapt2 dump badging build/android/ee-aoc.apk > ../deliverable/verification/apk-badging.txt
+          toolchain/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -h -l -d build/android/libmain.so > ../deliverable/verification/native-elf.txt
+          mkdir -p ../deliverable/repack/lib/arm64-v8a ../deliverable/repack/SDL-java ../deliverable/repack/upstream-android
+          cp build/android/libmain.so ../deliverable/repack/lib/arm64-v8a/
+          cp -a android/. ../deliverable/repack/upstream-android/
+          cp -a toolchain/src/SDL3-3.4.18/android-project/app/src/main/java/. ../deliverable/repack/SDL-java/
+          cp toolchain/android-sdk/platforms/android-34/android.jar ../tools-for-repack/
+          cp toolchain/android-sdk/build-tools/35.0.0/lib/d8.jar ../tools-for-repack/
+          cp toolchain/android-sdk/build-tools/35.0.0/lib/apksigner.jar ../tools-for-repack/
+          cp toolchain/android-sdk/build-tools/35.0.0/aapt2 ../tools-for-repack/
+          cp toolchain/android-sdk/build-tools/35.0.0/zipalign ../tools-for-repack/
+          python - <<'PY'
+          import hashlib,json,pathlib,zipfile
+          apk=pathlib.Path('../deliverable/Empire-Earth-AoC-upstream-code-only.apk')
+          with zipfile.ZipFile(apk) as z:
+              names=z.namelist()
+              assert 'lib/arm64-v8a/libmain.so' in names
+              assert 'assets/data.zip' not in names
+              assert not any(n.lower().endswith(('.ttf','.otf','.woff','.woff2','.ttc')) for n in names)
+          pathlib.Path('../deliverable/verification/package.json').write_text(json.dumps({'sha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'bytes':apk.stat().st_size,'game_data_bundled':False,'android_runtime_tested':False,'source':'RedstoneProff/empire_earth_next','source_commit':'2425578a60b7a0003abb5d7c4b6cf9b88dd7a4e6'},indent=2))
+          PY
+          tar --exclude=.git --exclude=toolchain --exclude=build --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' --exclude='*.ttc' -czf ../deliverable/upstream-source-no-fonts.tar.gz .
+      - name: Upload engine and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: empire-earth-native-engine
+          path: deliverable/
+          retention-days: 7
+      - name: Upload repack tools (no signing key)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: empire-earth-repack-tools
+          path: tools-for-repack/
+          retention-days: 7
