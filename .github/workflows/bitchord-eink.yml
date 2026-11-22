@@ -5,6 +5,9 @@ on:
     paths: ['.github/workflows/bitchord-eink.yml', 'bitchord-eink/**']
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: bitchord-eink-experiment
   cancel-in-progress: true
@@ -45,6 +48,9 @@ jobs:
           java-version: '17'
           distribution: temurin
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Android toolchain
         run: sdkmanager 'platforms;android-37' 'build-tools;36.0.0' 'cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
