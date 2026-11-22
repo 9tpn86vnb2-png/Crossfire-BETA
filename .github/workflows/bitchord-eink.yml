@@ -38,7 +38,10 @@ jobs:
           with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as t:t.extractall('patch',filter='data')
           PY
           python patch/patch.py upstream | tee dist/patch-report.json
+          python experiment/bitchord-eink/fixup.py upstream
+          cp experiment/bitchord-eink/fixup.py patch/
           cp -r patch upstream/EINK-PATCH
+          cp experiment/.github/workflows/bitchord-eink.yml upstream/EINK-PATCH/build-workflow.yml
           git -C upstream diff > dist/eink.patch
           git -C upstream rev-parse HEAD > dist/UPSTREAM_COMMIT.txt
           cp upstream/EINK-CHANGES.md upstream/EINK-MANIFEST.json upstream/LICENSE dist/
