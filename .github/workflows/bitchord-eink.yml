@@ -1,0 +1,29 @@
+name: BitChord e-ink experiment
+on:
+  push:
+    branches: [bitchord-eink-experiment-20261122]
+    paths: ['.github/workflows/bitchord-eink.yml', 'bitchord-eink/**']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: kushagrasinghx/BitChord
+          ref: 7448b92e032af7e5666c93b0e04c6b9fa3abf898
+          path: upstream
+          persist-credentials: false
+      - name: Package source for inspection
+        run: |
+          tar --exclude='.git' --exclude='*.onnx' --exclude='*.aar' --exclude='*.so' --exclude='*.png' --exclude='*.jpg' --exclude='*.webp' --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' -czf upstream-inspect.tar.gz -C upstream .
+          git -C upstream rev-parse HEAD > UPSTREAM_COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitchord-eink-source-inspection
+          path: |
+            upstream-inspect.tar.gz
+            UPSTREAM_COMMIT.txt
+          retention-days: 7
