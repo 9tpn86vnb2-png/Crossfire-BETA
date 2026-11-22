@@ -1,0 +1,57 @@
+name: BitChord e-ink emulator smoke test
+on:
+  push:
+    branches: [bitchord-eink-experiment-20261122]
+    paths: ['.github/workflows/bitchord-eink-smoke.yml', 'eink-testing/**']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Emulator install and smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: '45085047318'
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          ram-size: 2048M
+          heap-size: 512M
+          disk-size: 4G
+          disable-animations: true
+          disable-spellchecker: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            timeout 1200 gh run watch "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --exit-status --interval 20
+            gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --name BitChord-EInk-1.10-beta1 --dir packages
+            APK=$(find packages -name '*universal*.apk' -print -quit)
+            test -n "$APK"
+            mkdir -p smoke-results
+            sha256sum "$APK" > smoke-results/TESTED-APK-SHA256.txt
+            adb install -g "$APK"
+            python eink-testing/smoke.py
+      - name: Retain screenshots and test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-EInk-smoke-results
+          path: smoke-results/
+          if-no-files-found: warn
+          retention-days: 7
