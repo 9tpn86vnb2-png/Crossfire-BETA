@@ -5,25 +5,71 @@ on:
     paths: ['.github/workflows/bitchord-eink.yml', 'bitchord-eink/**']
 permissions:
   contents: read
+concurrency:
+  group: bitchord-eink-experiment
+  cancel-in-progress: true
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: experiment
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: kushagrasinghx/BitChord
           ref: 7448b92e032af7e5666c93b0e04c6b9fa3abf898
           path: upstream
           persist-credentials: false
-      - name: Package source for inspection
+      - name: Apply verified e-ink patch
         run: |
-          tar --exclude='.git' --exclude='*.onnx' --exclude='*.aar' --exclude='*.so' --exclude='*.png' --exclude='*.jpg' --exclude='*.webp' --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' -czf upstream-inspect.tar.gz -C upstream .
-          git -C upstream rev-parse HEAD > UPSTREAM_COMMIT.txt
-      - uses: actions/upload-artifact@v4
+          mkdir -p patch dist
+          python - <<'PY'
+          import base64,gzip,hashlib,io,tarfile
+          from pathlib import Path
+          text=Path('experiment/bitchord-eink/patch.tar.b64').read_text().replace('CQfaZ8J8JNjc','CQfaZ8JNjc')
+          data=base64.b64decode(text)
+          assert hashlib.sha256(data).hexdigest()=='1270ed04bc9e59defa97b98f47afbc04b487d0f15df93faebb30b7a031c45d97', 'Patch transport checksum mismatch'
+          with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as t:t.extractall('patch',filter='data')
+          PY
+          python patch/patch.py upstream | tee dist/patch-report.json
+          cp -r patch upstream/EINK-PATCH
+          git -C upstream diff > dist/eink.patch
+          git -C upstream rev-parse HEAD > dist/UPSTREAM_COMMIT.txt
+          cp upstream/EINK-CHANGES.md upstream/EINK-MANIFEST.json upstream/LICENSE dist/
+          tar --exclude='.git' --exclude='.gradle' --exclude='build' --exclude='.cxx' --exclude='*.onnx' --exclude='*.jks' --exclude='*.keystore' --exclude='keystore.properties' --exclude='local.properties' -czf dist/BitChord-EInk-1.10-corresponding-source.tar.gz -C upstream .
+      - uses: actions/setup-java@v4
         with:
-          name: bitchord-eink-source-inspection
-          path: |
-            upstream-inspect.tar.gz
-            UPSTREAM_COMMIT.txt
-          retention-days: 7
+          java-version: '17'
+          distribution: temurin
+      - uses: android-actions/setup-android@v3
+      - name: Android toolchain
+        run: sdkmanager 'platforms;android-37' 'build-tools;36.0.0' 'cmake;3.22.1'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+      - name: Compile optimized APK
+        working-directory: upstream
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleProdRelease --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx5g -Dfile.encoding=UTF-8' 2>&1 | tee ../dist/build.log
+      - name: Verify APKs
+        run: |
+          for apk in upstream/app/build/outputs/apk/prod/release/*.apk; do
+            name=$(basename "$apk" | sed 's/app-prod-release/BitChord-EInk-1.10-beta1/')
+            cp "$apk" "dist/$name"
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "dist/$name.signature.txt"
+            "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "dist/$name.manifest.txt"
+          done
+          cd dist
+          sha256sum *.apk *.tar.gz > SHA256SUMS.txt
+      - name: Retain build and source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-EInk-1.10-beta1
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
