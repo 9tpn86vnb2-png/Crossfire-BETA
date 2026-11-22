@@ -56,11 +56,10 @@ jobs:
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           cat "$ANDROID_HOME/cmdline-tools/latest/source.properties"
           "$SDKMANAGER" --list --channel=3 > dist/sdk-inventory.txt
-          grep -E 'platforms;android-37|build-tools;3[67]|cmake;3.22.1' dist/sdk-inventory.txt || true
           set +o pipefail
           yes | "$SDKMANAGER" --licenses > /dev/null
           set -o pipefail
-          "$SDKMANAGER" 'platforms;android-37' 'build-tools;36.0.0' 'cmake;3.22.1'
+          "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;36.0.0' 'cmake;3.22.1'
       - uses: actions/setup-java@v5
         with:
           java-version: '17'
