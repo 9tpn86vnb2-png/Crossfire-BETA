@@ -1,0 +1,86 @@
+name: Supernote BitChord controller validation
+on:
+  push:
+    branches: [bitchord-eink-experiment-20261122]
+    paths: ['.github/workflows/supernote-bitchord-test.yml', 'supernote-bitchord/test_controller.py']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Download exact test inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          timeout 600 gh run watch 45173935440 --repo "$GITHUB_REPOSITORY" --exit-status --interval 20
+          gh run download 45173935440 --repo "$GITHUB_REPOSITORY" --name supernote-bitchord-plugin --dir plugin-build
+          gh run download 45159184089 --repo "$GITHUB_REPOSITORY" --name BitChord-EInk-beta2-poweroff --dir companion
+          mkdir -p plugin-tests
+          sha256sum plugin-build/*.apk plugin-build/*.snplg companion/*universal*.apk > plugin-tests/INPUT-SHA256.txt
+          test "$(sha256sum companion/*universal*.apk | cut -d' ' -f1)" = 60baa09cb3cce1b600ffc36e8e212345a3440ebec80eb9825f490a972df9c2f0
+      - name: Enable emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          cat > /tmp/test-plugin.sh <<'SH'
+          set -euo pipefail
+          adb root
+          adb wait-for-device
+          adb shell stop
+          adb shell setprop dalvik.vm.heapgrowthlimit 256m
+          adb shell setprop dalvik.vm.heapsize 512m
+          adb shell start
+          for i in $(seq 1 60); do
+            if adb shell pm path android 2>/dev/null | grep -q package:; then break; fi
+            sleep 2
+          done
+          sleep 6
+          adb unroot
+          adb wait-for-device
+          adb shell id > plugin-tests/test-shell-identity.txt
+          adb shell input keyevent 82
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell settings put secure spell_checker_enabled 0
+          adb shell getprop > plugin-tests/emulator-properties.txt
+          test "$(adb shell getprop dalvik.vm.heapgrowthlimit | tr -d '\r')" = 256m
+          adb install -g "$(find companion -name '*universal*.apk' -print -quit)"
+          adb install plugin-build/controller-test-harness.apk
+          adb shell appops set org.bitchord.notes.nativecode.harness SYSTEM_ALERT_WINDOW allow
+          cp supernote-bitchord/test_controller.py plugin-tests/TEST-SCRIPT.py
+          python supernote-bitchord/test_controller.py
+          SH
+      - name: Real media IPC and native panel test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 6
+          ram-size: 2048M
+          heap-size: 512
+          disk-size: 4G
+          disable-animations: true
+          disable-spellchecker: true
+          pre-emulator-launch-script: printf '\nvm.heapSize=256\nhw.ramSize=2048\nhw.lcd.width=800\nhw.lcd.height=1280\nhw.lcd.density=240\n' >> "$ANDROID_AVD_HOME/test.avd/config.ini"
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
+          script: bash /tmp/test-plugin.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supernote-bitchord-controller-tests
+          path: plugin-tests/
+          retention-days: 14
+          if-no-files-found: warn
