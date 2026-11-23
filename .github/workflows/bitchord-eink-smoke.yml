@@ -1,4 +1,4 @@
-name: BitChord e-ink emulator smoke test
+name: BitChord power-off validation
 on:
   push:
     branches: [bitchord-eink-experiment-20261122]
@@ -9,7 +9,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,33 +23,50 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Prepare test entrypoint
+      - name: Correct history-versus-session test assertion
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('eink-testing/smoke.py');s=p.read_text()
-          s=s.replace('/sdcard/Music','/sdcard/Android/data/com.music.bitchord.eink/files')
-          s=s.replace("snapshot('06-paused');adb", "snapshot('06-paused');(OUT/'media-session-paused.txt').write_bytes(adb('shell','dumpsys','media_session'));adb")
+          import re
+          p=Path('eink-poweroff/smoke.py');s=p.read_text()
+          before='def power(root, prefix):'
+          helper='def has_app_media_session(raw):\n    # Historical Last MediaButtonReceiver and packages= entries are NOT sessions.\n    return bool(re.search(r"(?m)^[ \\t]*package="+re.escape(PKG)+r"[ \\t]*$",raw))\n\n'
+          assert s.count(before)==1
+          s=s.replace(before,helper+before)
+          before="PKG not in media(prefix+'-sessions')"
+          assert s.count(before)==1
+          s=s.replace(before,"not has_app_media_session(media(prefix+'-sessions'))")
+          before="PKG not in media('after-stale-start')"
+          assert s.count(before)==1
+          s=s.replace(before,"not has_app_media_session(media('after-stale-start'))")
+          before="attempted=adb('shell','am','startservice','-n',PKG+'/com.music.bitchord.playback.PlaybackService',check=False)"
+          after="probe=subprocess.run(['adb','shell','am','startservice','-n',PKG+'/com.music.bitchord.playback.PlaybackService'],capture_output=True,timeout=35)\n    attempted=probe.stdout+b'\\nSTDERR:\\n'+probe.stderr\n    report['stale_service_probe_delivered']=probe.returncode==0 and b'Error' not in attempted"
+          assert s.count(before)==1
+          s=s.replace(before,after)
+          s=s.replace("report={'physical_device_tested':False,'emulator_api':29,'checks':[]}","report={'physical_device_tested':False,'emulator_api':29,'checks':[],'assertion_correction':'Match actual package= session records, not historical receiver or packages= references.'}")
           p.write_text(s)
+          pattern=r'(?m)^[ \t]*package=com\.music\.bitchord\.eink[ \t]*$'
+          assert re.search(pattern,'    package=com.music.bitchord.eink\n    active=true')
+          assert not re.search(pattern,'Last MediaButtonReceiver: com.music.bitchord.eink\n  uid=10146 packages=com.music.bitchord.eink')
           PY
-          cat > /tmp/eink-smoke.sh <<'SH'
+          cat > /tmp/poweroff-validate.sh <<'SH'
           set -euo pipefail
-          timeout 1500 gh run watch "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --exit-status --interval 30
-          gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --name BitChord-EInk-1.10-beta1 --dir packages
+          gh run download 45159184089 --repo "$GITHUB_REPOSITORY" --name BitChord-EInk-beta2-poweroff --dir packages
           APK=$(find packages -name '*universal*.apk' -print -quit)
           test -n "$APK"
-          mkdir -p smoke-results
-          cp eink-testing/smoke.py smoke-results/TEST-SCRIPT.py
-          adb shell getprop > smoke-results/emulator-properties.txt
-          sha256sum "$APK" > smoke-results/TESTED-APK-SHA256.txt
+          echo "60baa09cb3cce1b600ffc36e8e212345a3440ebec80eb9825f490a972df9c2f0  $APK" | sha256sum -c -
+          mkdir -p poweroff-results
+          cp eink-poweroff/smoke.py poweroff-results/TEST-SCRIPT.py
+          cp .github/workflows/bitchord-eink-smoke.yml poweroff-results/TEST-WORKFLOW.yml
+          adb shell getprop > poweroff-results/emulator-properties.txt
+          sha256sum "$APK" > poweroff-results/TESTED-APK-SHA256.txt
           adb install -g "$APK"
-          python eink-testing/smoke.py
+          python eink-poweroff/smoke.py
           SH
-      - name: Emulator install and smoke test
+      - name: Validate exact unchanged APK
         uses: reactivecircus/android-emulator-runner@v2
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN: '45086251310'
         with:
           api-level: 29
           target: google_apis
@@ -62,12 +79,12 @@ jobs:
           disable-spellchecker: true
           pre-emulator-launch-script: printf '\nvm.heapSize=256\nhw.ramSize=2048\nhw.lcd.width=800\nhw.lcd.height=1280\nhw.lcd.density=240\n' >> "$ANDROID_AVD_HOME/test.avd/config.ini"
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
-          script: bash /tmp/eink-smoke.sh
+          script: bash /tmp/poweroff-validate.sh
       - name: Retain screenshots and test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: BitChord-EInk-final-validation
-          path: smoke-results/
+          name: BitChord-EInk-beta2-final-validation
+          path: poweroff-results/
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14
