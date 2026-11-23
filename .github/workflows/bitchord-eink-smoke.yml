@@ -43,7 +43,7 @@ jobs:
           after="probe=subprocess.run(['adb','shell','am','startservice','-n',PKG+'/com.music.bitchord.playback.PlaybackService'],capture_output=True,timeout=35)\n    attempted=probe.stdout+b'\\nSTDERR:\\n'+probe.stderr\n    report['stale_service_probe_delivered']=probe.returncode==0 and b'Error' not in attempted"
           assert s.count(before)==1
           s=s.replace(before,after)
-          s=s.replace("report={'physical_device_tested':False,'emulator_api':29,'checks':[]}","report={'physical_device_tested':False,'emulator_api':29,'checks':[],'assertion_correction':'Match actual package= session records, not historical receiver or packages= references.'}")
+          s=s.replace("report={'physical_device_tested':False,'emulator_api':29,'checks':[]}","report={'physical_device_tested':False,'emulator_api':29,'checks':[],'assertion_correction':'Match actual package= session records, not historical receiver or packages= references.','heap_configuration':'Emulator setup sets 256m heapgrowthlimit and 512m heapsize before restarting Android runtime; adb is unrooted before installing/testing the unmodified APK.'}")
           p.write_text(s)
           pattern=r'(?m)^[ \t]*package=com\.music\.bitchord\.eink[ \t]*$'
           assert re.search(pattern,'    package=com.music.bitchord.eink\n    active=true')
@@ -58,7 +58,31 @@ jobs:
           mkdir -p poweroff-results
           cp eink-poweroff/smoke.py poweroff-results/TEST-SCRIPT.py
           cp .github/workflows/bitchord-eink-smoke.yml poweroff-results/TEST-WORKFLOW.yml
+          adb shell getprop > poweroff-results/emulator-properties-before.txt
+          # Configure only the disposable emulator. The APK has no root path.
+          # This API29 image can start zygote before its qemu heap property lands,
+          # leaving a 16 MB ART heap despite later getprop reporting 512m.
+          adb root
+          adb wait-for-device
+          adb shell stop
+          adb shell setprop dalvik.vm.heapgrowthlimit 256m
+          adb shell setprop dalvik.vm.heapsize 512m
+          adb shell start
+          for i in $(seq 1 60); do
+            if adb shell pm path android 2>/dev/null | grep -q package:; then break; fi
+            sleep 2
+          done
+          sleep 6
+          adb unroot
+          adb wait-for-device
+          adb shell id > poweroff-results/test-shell-identity.txt
+          adb shell input keyevent 82
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell settings put secure spell_checker_enabled 0
           adb shell getprop > poweroff-results/emulator-properties.txt
+          test "$(adb shell getprop dalvik.vm.heapgrowthlimit | tr -d '\r')" = 256m
           sha256sum "$APK" > poweroff-results/TESTED-APK-SHA256.txt
           adb install -g "$APK"
           python eink-poweroff/smoke.py
