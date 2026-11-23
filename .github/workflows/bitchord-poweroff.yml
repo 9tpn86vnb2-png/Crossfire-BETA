@@ -1,0 +1,151 @@
+name: BitChord E-Ink power off
+on:
+  push:
+    branches: [bitchord-eink-experiment-20261122]
+    paths: ['.github/workflows/bitchord-poweroff.yml', 'eink-poweroff/**']
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: bitchord-eink-poweroff
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: experiment
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kushagrasinghx/BitChord
+          ref: 7448b92e032af7e5666c93b0e04c6b9fa3abf898
+          path: upstream
+          persist-credentials: false
+      - name: Reconstruct exact e-ink base and add power off
+        run: |
+          mkdir -p patch dist
+          python - <<'PY'
+          import base64,gzip,hashlib,io,tarfile
+          from pathlib import Path
+          text=Path('experiment/bitchord-eink/patch.tar.b64').read_text().replace('CQfaZ8J8JNjc','CQfaZ8JNjc')
+          data=base64.b64decode(text)
+          assert hashlib.sha256(data).hexdigest()=='1270ed04bc9e59defa97b98f47afbc04b487d0f15df93faebb30b7a031c45d97'
+          with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as t:t.extractall('patch',filter='data')
+          PY
+          python patch/patch.py upstream > dist/base-patch.json
+          python experiment/bitchord-eink/fixup.py upstream
+          python experiment/bitchord-eink/finalize.py upstream
+          python experiment/eink-poweroff/patch.py upstream > dist/poweroff-patch.json
+          cp experiment/bitchord-eink/*.py patch/
+          cp -r patch upstream/EINK-PATCH
+          cp -r experiment/eink-poweroff upstream/EINK-POWER-OFF
+          cp experiment/.github/workflows/bitchord-poweroff.yml upstream/EINK-POWER-OFF/build-workflow.yml
+          git -C upstream diff > dist/eink-poweroff.patch
+          git -C upstream rev-parse HEAD > dist/UPSTREAM_COMMIT.txt
+          cp upstream/EINK-MANIFEST.json upstream/POWER-OFF-CHANGES.md upstream/LICENSE dist/
+          tar --exclude='.git' --exclude='.gradle' --exclude='build' --exclude='.cxx' --exclude='*.onnx' --exclude='*.jks' --exclude='*.keystore' --exclude='keystore.properties' --exclude='local.properties' --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' -czf dist/BitChord-EInk-beta2-source.tar.gz -C upstream .
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Android toolchain
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          set -o pipefail
+          "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;36.0.0' 'cmake;3.22.1'
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: bitchord-eink-experimental-debug-key-beta2
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+      - name: Compile optimized release-variant APK
+        working-directory: upstream
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleProdRelease --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx5g -Dfile.encoding=UTF-8' 2>&1 | tee ../dist/build.log
+      - name: Verify APKs and retain verification tools
+        run: |
+          for apk in upstream/app/build/outputs/apk/prod/release/*.apk; do
+            name=$(basename "$apk" | sed 's/app-prod-/BitChord-EInk-1.10-beta2-poweroff-/')
+            cp "$apk" "dist/$name"
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "dist/$name.signature.txt"
+            "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "dist/$name.manifest.txt"
+          done
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" dist/apksigner.jar
+          cd dist
+          sha256sum *.apk *.tar.gz > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BitChord-EInk-beta2-poweroff
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: BitChord-EInk-beta2-poweroff
+          path: packages
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Prepare emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          cat > /tmp/test-poweroff.sh <<'SH'
+          set -euo pipefail
+          APK=$(find packages -name '*universal*.apk' -print -quit)
+          test -n "$APK"
+          mkdir -p poweroff-results
+          sha256sum "$APK" > poweroff-results/TESTED-APK-SHA256.txt
+          cp eink-poweroff/smoke.py poweroff-results/TEST-SCRIPT.py
+          adb shell getprop > poweroff-results/emulator-properties.txt
+          adb install -g "$APK"
+          python eink-poweroff/smoke.py
+          SH
+      - name: Playback, cancel, shutdown and reopen tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 6
+          ram-size: 2048M
+          heap-size: 512
+          disk-size: 4G
+          disable-animations: true
+          disable-spellchecker: true
+          pre-emulator-launch-script: printf '\nvm.heapSize=256\nhw.ramSize=2048\nhw.lcd.width=800\nhw.lcd.height=1280\nhw.lcd.density=240\n' >> "$ANDROID_AVD_HOME/test.avd/config.ini"
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
+          script: bash /tmp/test-poweroff.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BitChord-EInk-beta2-poweroff-tests
+          path: poweroff-results/
+          retention-days: 14
+          if-no-files-found: warn
