@@ -1,0 +1,28 @@
+name: Supernote BitChord SDK inspection
+on:
+  push:
+    branches: [bitchord-eink-experiment-20261122]
+    paths: ['.github/workflows/supernote-bitchord-inspect.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          mkdir sdk
+          cd sdk
+          npm view sn-plugin-lib version dist --json > sdk-metadata.json
+          npm view @supernote-plugin/sn-plugin-template version dist --json > template-metadata.json
+          npm pack sn-plugin-lib
+          npm pack @supernote-plugin/sn-plugin-template
+          curl -fsSL https://docs.supernote.com/en/plugin-base/permission.md -o permissions.md || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: supernote-bitchord-sdk-inspection
+          path: sdk/
+          retention-days: 7
