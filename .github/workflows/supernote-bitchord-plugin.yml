@@ -1,0 +1,95 @@
+name: Supernote BitChord plugin
+on:
+  push:
+    branches: [bitchord-eink-experiment-20261122]
+    paths: ['.github/workflows/supernote-bitchord-plugin.yml', 'supernote-bitchord/MusicPanel.java', 'supernote-bitchord/prepare_plugin.py']
+permissions:
+  contents: read
+concurrency:
+  group: supernote-bitchord-plugin
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Official template and project
+        run: |
+          mkdir -p sdk dist
+          cd sdk
+          npm pack @supernote-plugin/sn-plugin-template@1.0.13
+          cd ..
+          python supernote-bitchord/prepare_plugin.py plugin sdk/supernote-plugin-sn-plugin-template-1.0.13.tgz
+          cd plugin
+          npm install --ignore-scripts --no-audit --no-fund
+      - name: Bundle real Supernote entry
+        working-directory: plugin
+        run: |
+          mkdir -p build/generated
+          npx react-native bundle --entry-file index.js --platform android --dev false --max-workers 2 --bundle-output build/generated/BitChordNotes.bundle --assets-dest build/generated 2>&1 | tee ../dist/bundle.log
+      - name: Android toolchain
+        run: |
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          set -o pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+      - name: Compile native module and test driver
+        working-directory: plugin/android
+        run: |
+          ./gradlew :app:assembleRelease :app:assembleDebug --no-daemon --max-workers=2 2>&1 | tee ../../dist/native-build.log
+      - name: Package and verify
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,zipfile,hashlib,shutil
+          r=Path('plugin');g=r/'build/generated';d=Path('dist')
+          shutil.copy(r/'PluginConfig.json',g/'PluginConfig.json');shutil.copy(r/'assets/icon.png',g/'icon.png')
+          apk=r/'android/app/build/outputs/apk/release/app-release-unsigned.apk';assert apk.is_file()
+          shutil.copy(apk,g/'app.npk')
+          for name in ['LICENSE','THIRD-PARTY-NOTICES.txt']:shutil.copy(r/name,g/name)
+          lic=r/'licenses';lic.mkdir(exist_ok=True)
+          for p in (r/'node_modules').rglob('*'):
+            if p.is_file() and p.name.lower() in ('license','license.txt','license.md','notice','notice.txt'):
+              dest=lic/p.relative_to(r/'node_modules');dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy(p,dest)
+          shutil.copytree(lic,g/'licenses',dirs_exist_ok=True)
+          output=d/'BitChord-Notes-0.1.0-experimental.snplg'
+          with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as z:
+            for p in sorted(g.rglob('*')):
+              if p.is_file():z.write(p,p.relative_to(g))
+          with zipfile.ZipFile(g/'app.npk') as z:
+            dex=b''.join(z.read(n) for n in z.namelist() if n.endswith('.dex'))
+            assert b'Lorg/bitchord/notes/NotesPackage;' in dex and b'Lorg/bitchord/notes/MusicPanel;' in dex
+            assert b'Lorg/bitchord/notes/HarnessActivity;' not in dex
+            assert not any(n.startswith('lib/') and n.endswith('.so') for n in z.namelist())
+          with zipfile.ZipFile(output) as z:assert z.testzip() is None
+          report={'physical_supernote_tested':False,'sdk':'sn-plugin-lib 0.2.3','react_native':'0.79.2','template':'1.0.13','native_module_compiled':True,'javascript_bundle_built':True,'package_zip_integrity':True,'test_activity_excluded':True,'plugin_requires_companion':True,'apk_native_engine_bundled':False,'snplg_sha256':hashlib.sha256(output.read_bytes()).hexdigest()}
+          (d/'PLUGIN-BUILD-VERIFICATION.json').write_text(json.dumps(report,indent=2)+'\n')
+          shutil.copy(r/'android/app/build/outputs/apk/debug/app-debug.apk',d/'controller-test-harness.apk')
+          shutil.copytree(Path('supernote-bitchord'),r/'rebuild-scripts',dirs_exist_ok=True)
+          shutil.copy('.github/workflows/supernote-bitchord-plugin.yml',r/'rebuild-scripts/build-workflow.yml')
+          PY
+          tar --exclude=node_modules --exclude=build --exclude=.gradle --exclude='*.keystore' --exclude='*.jks' --exclude=local.properties --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' -czf dist/BitChord-Notes-0.1.0-source.tar.gz -C plugin .
+          cd dist; sha256sum *.snplg *.apk *.tar.gz > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supernote-bitchord-plugin
+          path: dist/
+          if-no-files-found: warn
+          retention-days: 14
