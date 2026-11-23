@@ -32,6 +32,12 @@ jobs:
           cd sdk
           npm pack @supernote-plugin/sn-plugin-template@1.0.13
           cd ..
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('supernote-bitchord/prepare_plugin.py');s=p.read_text()
+          s=s.replace('SUPERN0TE\\nThe same','SUPERNOTE - The same')
+          p.write_text(s)
+          PY
           python supernote-bitchord/prepare_plugin.py plugin sdk/supernote-plugin-sn-plugin-template-1.0.13.tgz
           cd plugin
           npm install --ignore-scripts --no-audit --no-fund
