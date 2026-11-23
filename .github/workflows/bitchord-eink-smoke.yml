@@ -10,6 +10,10 @@ jobs:
   smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        build-run: ['45085047318', '45086251310']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,11 +27,24 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Prepare test entrypoint
+        run: |
+          cat > /tmp/eink-smoke.sh <<'SH'
+          set -euo pipefail
+          timeout 1500 gh run watch "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --exit-status --interval 30
+          gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --name BitChord-EInk-1.10-beta1 --dir packages
+          APK=$(find packages -name '*universal*.apk' -print -quit)
+          test -n "$APK"
+          mkdir -p smoke-results
+          sha256sum "$APK" > smoke-results/TESTED-APK-SHA256.txt
+          adb install -g "$APK"
+          python eink-testing/smoke.py
+          SH
       - name: Emulator install and smoke test
         uses: reactivecircus/android-emulator-runner@v2
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN: '45085047318'
+          BUILD_RUN: ${{ matrix.build-run }}
         with:
           api-level: 29
           target: google_apis
@@ -37,21 +54,13 @@ jobs:
           disk-size: 4G
           disable-animations: true
           disable-spellchecker: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            timeout 1200 gh run watch "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --exit-status --interval 20
-            gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --name BitChord-EInk-1.10-beta1 --dir packages
-            APK=$(find packages -name '*universal*.apk' -print -quit)
-            test -n "$APK"
-            mkdir -p smoke-results
-            sha256sum "$APK" > smoke-results/TESTED-APK-SHA256.txt
-            adb install -g "$APK"
-            python eink-testing/smoke.py
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
+          script: bash /tmp/eink-smoke.sh
       - name: Retain screenshots and test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: BitChord-EInk-smoke-results
+          name: BitChord-EInk-smoke-results-${{ matrix.build-run }}
           path: smoke-results/
           if-no-files-found: warn
           retention-days: 7
