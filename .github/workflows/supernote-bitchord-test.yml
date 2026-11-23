@@ -2,7 +2,7 @@ name: Supernote BitChord controller validation
 on:
   push:
     branches: [bitchord-eink-experiment-20261122]
-    paths: ['.github/workflows/supernote-bitchord-test.yml', 'supernote-bitchord/test_controller.py']
+    paths: ['.github/workflows/supernote-bitchord-test.yml', 'supernote-bitchord/test_controller.py', 'supernote-bitchord/build_test_driver.py']
 permissions:
   contents: read
   actions: read
@@ -18,16 +18,32 @@ jobs:
         with:
           java-version: '21'
           distribution: temurin
-      - name: Download exact test inputs
+      - name: Download exact final test inputs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          timeout 600 gh run watch 45173935440 --repo "$GITHUB_REPOSITORY" --exit-status --interval 20
-          gh run download 45173935440 --repo "$GITHUB_REPOSITORY" --name supernote-bitchord-plugin --dir plugin-build
+          gh run download 45174943357 --repo "$GITHUB_REPOSITORY" --name supernote-bitchord-plugin --dir plugin-build
           gh run download 45159184089 --repo "$GITHUB_REPOSITORY" --name BitChord-EInk-beta2-poweroff --dir companion
           mkdir -p plugin-tests
           sha256sum plugin-build/*.apk plugin-build/*.snplg companion/*universal*.apk > plugin-tests/INPUT-SHA256.txt
           test "$(sha256sum companion/*universal*.apk | cut -d' ' -f1)" = 60baa09cb3cce1b600ffc36e8e212345a3440ebec80eb9825f490a972df9c2f0
+      - name: Build all-window test driver
+        run: |
+          python supernote-bitchord/build_test_driver.py
+          cp supernote-bitchord/build_test_driver.py plugin-tests/
+          cp window-driver/WindowDump.java plugin-tests/
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('supernote-bitchord/test_controller.py');s=p.read_text()
+          old=" adb('shell','uiautomator','dump','/sdcard/plugin-ui.xml',timeout=30)\n b=adb('shell','cat','/sdcard/plugin-ui.xml');"
+          new=" raw=adb('shell','am','instrument','-w','org.bitchord.testdriver/.WindowDump',timeout=45).decode(errors='replace')\n m=re.search(r'INSTRUMENTATION_RESULT: xml=(<hierarchy>.*?</hierarchy>)',raw,re.S)\n if not m:raise RuntimeError('All-window driver returned no XML: '+raw[-1000:])\n b=m.group(1).encode();"
+          assert old in s;s=s.replace(old,new)
+          old="r=snap('17-existing-app');ck('handoff opens existing app power control'"
+          new="r=snap('17-existing-app')\n if not has(r,'Power off BitChord'):\n  adb('shell','input','keyevent',4);time.sleep(2);r=snap('17-existing-app-collapsed')\n ck('handoff opens existing app power control'"
+          assert old in s;s=s.replace(old,new)
+          p.write_text(s)
+          compile(s,str(p),'exec')
+          PY
       - name: Enable emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -58,6 +74,7 @@ jobs:
           test "$(adb shell getprop dalvik.vm.heapgrowthlimit | tr -d '\r')" = 256m
           adb install -g "$(find companion -name '*universal*.apk' -print -quit)"
           adb install plugin-build/controller-test-harness.apk
+          adb install window-driver/driver.apk
           adb shell appops set org.bitchord.notes.nativecode.harness SYSTEM_ALERT_WINDOW allow
           cp supernote-bitchord/test_controller.py plugin-tests/TEST-SCRIPT.py
           python supernote-bitchord/test_controller.py
