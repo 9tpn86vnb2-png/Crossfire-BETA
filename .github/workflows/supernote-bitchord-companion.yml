@@ -1,0 +1,94 @@
+name: Supernote BitChord companion
+on:
+  push:
+    branches: [bitchord-eink-experiment-20261122]
+    paths: ['.github/workflows/supernote-bitchord-companion.yml', 'supernote-bitchord/companion.py']
+permissions:
+  contents: read
+concurrency:
+  group: supernote-bitchord-companion
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: experiment
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kushagrasinghx/BitChord
+          ref: 7448b92e032af7e5666c93b0e04c6b9fa3abf898
+          path: upstream
+          persist-credentials: false
+      - name: Reconstruct base and add companion entry
+        run: |
+          mkdir -p patch dist
+          python - <<'PY'
+          import base64,gzip,hashlib,io,tarfile
+          from pathlib import Path
+          data=base64.b64decode(Path('experiment/bitchord-eink/patch.tar.b64').read_text().replace('CQfaZ8J8JNjc','CQfaZ8JNjc'))
+          assert hashlib.sha256(data).hexdigest()=='1270ed04bc9e59defa97b98f47afbc04b487d0f15df93faebb30b7a031c45d97'
+          with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as t:t.extractall('patch',filter='data')
+          PY
+          python patch/patch.py upstream > dist/base-patch.json
+          python experiment/bitchord-eink/fixup.py upstream
+          python experiment/bitchord-eink/finalize.py upstream
+          python experiment/eink-poweroff/patch.py upstream > dist/poweroff-patch.json
+          python experiment/supernote-bitchord/companion.py upstream
+          cp -r patch upstream/EINK-PATCH
+          cp experiment/bitchord-eink/*.py upstream/EINK-PATCH/
+          cp -r experiment/eink-poweroff upstream/EINK-POWER-OFF
+          mkdir upstream/SUPERNOTE-BUILD
+          cp experiment/supernote-bitchord/companion.py experiment/.github/workflows/supernote-bitchord-companion.yml upstream/SUPERNOTE-BUILD/
+          git -C upstream diff > dist/companion.patch
+          cp upstream/LICENSE upstream/SUPERNOTE-COMPANION.md dist/
+          tar --exclude='.git' --exclude='.gradle' --exclude='build' --exclude='.cxx' --exclude='*.onnx' --exclude='*.jks' --exclude='*.keystore' --exclude='keystore.properties' --exclude='local.properties' --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' -czf dist/BitChord-EInk-beta3-source.tar.gz -C upstream .
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - run: |
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          set -o pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-37.0' 'build-tools;36.0.0' 'cmake;3.22.1'
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: bitchord-eink-experimental-debug-key-beta2
+          fail-on-cache-miss: true
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+      - name: Compile
+        working-directory: upstream
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleProdRelease --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx5g -Dfile.encoding=UTF-8' 2>&1 | tee ../dist/build.log
+      - name: Verify matching signer
+        run: |
+          for apk in upstream/app/build/outputs/apk/prod/release/*.apk; do
+            name=$(basename "$apk" | sed 's/app-prod-/BitChord-EInk-beta3-plugin-/')
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "dist/$name.signature.txt"
+            grep -q 'c0dfc4d85cec334c9815993797971f0d3f062eaa50b0fdd455837056d3da9d71' "dist/$name.signature.txt"
+            "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "dist/$name.manifest.txt"
+            cp "$apk" "dist/$name"
+          done
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" dist/
+          cd dist; sha256sum *.apk *.tar.gz > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supernote-bitchord-companion
+          path: dist/
+          retention-days: 14
