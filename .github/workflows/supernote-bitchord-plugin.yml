@@ -2,7 +2,7 @@ name: Supernote BitChord plugin
 on:
   push:
     branches: [bitchord-eink-experiment-20261122]
-    paths: ['.github/workflows/supernote-bitchord-plugin.yml', 'supernote-bitchord/MusicPanel.java', 'supernote-bitchord/prepare_plugin.py']
+    paths: ['.github/workflows/supernote-bitchord-plugin.yml', 'supernote-bitchord/MusicPanel.java', 'supernote-bitchord/prepare_plugin.py', 'supernote-bitchord/finish_plugin.py']
 permissions:
   contents: read
 concurrency:
@@ -32,13 +32,8 @@ jobs:
           cd sdk
           npm pack @supernote-plugin/sn-plugin-template@1.0.13
           cd ..
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('supernote-bitchord/prepare_plugin.py');s=p.read_text()
-          s=s.replace('SUPERN0TE\\nThe same','SUPERNOTE - The same')
-          p.write_text(s)
-          PY
           python supernote-bitchord/prepare_plugin.py plugin sdk/supernote-plugin-sn-plugin-template-1.0.13.tgz
+          python supernote-bitchord/finish_plugin.py plugin
           cd plugin
           npm install --ignore-scripts --no-audit --no-fund
       - name: Bundle real Supernote entry
@@ -68,7 +63,7 @@ jobs:
           shutil.copy(r/'PluginConfig.json',g/'PluginConfig.json');shutil.copy(r/'assets/icon.png',g/'icon.png')
           apk=r/'android/app/build/outputs/apk/release/app-release-unsigned.apk';assert apk.is_file()
           shutil.copy(apk,g/'app.npk')
-          for name in ['LICENSE','THIRD-PARTY-NOTICES.txt']:shutil.copy(r/name,g/name)
+          for name in ['LICENSE','THIRD-PARTY-NOTICES.txt','COMPATIBILITY.md']:shutil.copy(r/name,g/name)
           lic=r/'licenses';lic.mkdir(exist_ok=True)
           for p in (r/'node_modules').rglob('*'):
             if p.is_file() and p.name.lower() in ('license','license.txt','license.md','notice','notice.txt'):
@@ -84,10 +79,11 @@ jobs:
             assert b'Lorg/bitchord/notes/HarnessActivity;' not in dex
             assert not any(n.startswith('lib/') and n.endswith('.so') for n in z.namelist())
           with zipfile.ZipFile(output) as z:assert z.testzip() is None
-          report={'physical_supernote_tested':False,'sdk':'sn-plugin-lib 0.2.3','react_native':'0.79.2','template':'1.0.13','native_module_compiled':True,'javascript_bundle_built':True,'package_zip_integrity':True,'test_activity_excluded':True,'plugin_requires_companion':True,'apk_native_engine_bundled':False,'snplg_sha256':hashlib.sha256(output.read_bytes()).hexdigest()}
+          report={'physical_supernote_tested':False,'sdk':'sn-plugin-lib 0.2.3','react_native':'0.79.2','template':'1.0.13','native_module_compiled':True,'javascript_bundle_built':True,'package_zip_integrity':True,'test_activity_excluded':True,'plugin_requires_existing_beta2':True,'apk_engine_bundled':False,'poweroff':'handoff to existing app power icon, not a remote kill','snplg_sha256':hashlib.sha256(output.read_bytes()).hexdigest()}
           (d/'PLUGIN-BUILD-VERIFICATION.json').write_text(json.dumps(report,indent=2)+'\n')
           shutil.copy(r/'android/app/build/outputs/apk/debug/app-debug.apk',d/'controller-test-harness.apk')
-          shutil.copytree(Path('supernote-bitchord'),r/'rebuild-scripts',dirs_exist_ok=True)
+          (r/'rebuild-scripts').mkdir(exist_ok=True)
+          for name in ('prepare_plugin.py','finish_plugin.py','MusicPanel.java'):shutil.copy(Path('supernote-bitchord')/name,r/'rebuild-scripts'/name)
           shutil.copy('.github/workflows/supernote-bitchord-plugin.yml',r/'rebuild-scripts/build-workflow.yml')
           PY
           tar --exclude=node_modules --exclude=build --exclude=.gradle --exclude='*.keystore' --exclude='*.jks' --exclude=local.properties --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff*' -czf dist/BitChord-Notes-0.1.0-source.tar.gz -C plugin .
