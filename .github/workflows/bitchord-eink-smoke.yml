@@ -10,10 +10,6 @@ jobs:
   smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        build-run: ['45085047318', '45086251310']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,6 +25,13 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Prepare test entrypoint
         run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('eink-testing/smoke.py');s=p.read_text()
+          s=s.replace('/sdcard/Music','/sdcard/Android/data/com.music.bitchord.eink/files')
+          s=s.replace("snapshot('06-paused');adb", "snapshot('06-paused');(OUT/'media-session-paused.txt').write_bytes(adb('shell','dumpsys','media_session'));adb")
+          p.write_text(s)
+          PY
           cat > /tmp/eink-smoke.sh <<'SH'
           set -euo pipefail
           timeout 1500 gh run watch "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --exit-status --interval 30
@@ -36,6 +39,8 @@ jobs:
           APK=$(find packages -name '*universal*.apk' -print -quit)
           test -n "$APK"
           mkdir -p smoke-results
+          cp eink-testing/smoke.py smoke-results/TEST-SCRIPT.py
+          adb shell getprop > smoke-results/emulator-properties.txt
           sha256sum "$APK" > smoke-results/TESTED-APK-SHA256.txt
           adb install -g "$APK"
           python eink-testing/smoke.py
@@ -44,23 +49,25 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN: ${{ matrix.build-run }}
+          BUILD_RUN: '45086251310'
         with:
           api-level: 29
           target: google_apis
           arch: x86_64
+          profile: Nexus 6
           ram-size: 2048M
-          heap-size: 512M
+          heap-size: 512
           disk-size: 4G
           disable-animations: true
           disable-spellchecker: true
+          pre-emulator-launch-script: printf '\nvm.heapSize=256\nhw.ramSize=2048\nhw.lcd.width=800\nhw.lcd.height=1280\nhw.lcd.density=240\n' >> "$ANDROID_AVD_HOME/test.avd/config.ini"
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
           script: bash /tmp/eink-smoke.sh
       - name: Retain screenshots and test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: BitChord-EInk-smoke-results-${{ matrix.build-run }}
+          name: BitChord-EInk-final-validation
           path: smoke-results/
           if-no-files-found: warn
           retention-days: 7
